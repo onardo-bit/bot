@@ -23,7 +23,7 @@ from aiogram.enums import PollType
 # ============================================
 TOKEN = os.environ.get("BOT_TOKEN") or "9098594468:AAHYZT21NS_IYsc3B1N6w8bmP8y0F4ZvWeo"
 ADMIN_IDS = [7004839619]
-ADMIN_USERNAME = "@rveke"
+ADMIN_USERNAME = "onardo-bit"
 GROUP_ID = -5370978242
 
 DB_NAME = os.environ.get("DB_PATH", "game_bot.db")
@@ -68,7 +68,7 @@ def set_setting(key, val):
     conn.commit(); conn.close()
 
 def get_join_seconds():
-    return int(get_setting("join_seconds", "900"))  # По умолчанию 15 минут (900 сек)
+    return int(get_setting("join_seconds", "900"))
 
 def get_timezone():
     return int(get_setting("tz", "3"))
@@ -211,6 +211,14 @@ async def announce_winner(chat_id, player, game_name):
         f"{who}, вручите приз победителю!"
     )
 
+async def hide_admin_cmd(msg: Message):
+    """Удаляет сообщение админа из группы, чтобы участники не видели настройки"""
+    if msg.chat.type in ("group", "supergroup"):
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+
 # ============================================
 # ИГРА 1: ЛУДКА ДО 777 (ИГРОКИ САМИ КИДАЮТ 🎰 В ЧАТ)
 # ============================================
@@ -253,7 +261,7 @@ async def on_user_slot_dice(msg: Message):
         active_games.pop("777", None)
 
 # ============================================
-# ИГРА 2: ВИКТОРИНА (ПРИ НИЧЬЕ — ПО СКОРОСТИ)
+# ИГРА 2: ВИКТОРИНА
 # ============================================
 async def run_quiz(chat_id):
     game = active_games.get("quiz")
@@ -317,7 +325,7 @@ async def on_poll_answer(pa: PollAnswer):
     }
 
 # ============================================
-# ИГРА 3: 21 (БЕЗ ЛАГОВ И БЛОКИРОВОК TELEGRAM)
+# ИГРА 3: 21 (БЕЗ ЛАГОВ)
 # ============================================
 async def run_21(chat_id):
     game = active_games.get("21")
@@ -458,22 +466,24 @@ async def cb_join(call: CallbackQuery):
 async def cmd_mute(msg: Message):
     if not is_admin(msg.from_user.id):
         return
+    await hide_admin_cmd(msg)
     try:
         await bot.set_chat_permissions(
-            msg.chat.id,
+            GROUP_ID,
             ChatPermissions(can_send_messages=False)
         )
-        await msg.answer("🔇 Чат замучен! Участники не могут писать.")
+        await bot.send_message(GROUP_ID, "🔇 Чат замучен! Участники не могут писать.")
     except Exception as e:
-        await msg.answer(f"❌ Ошибка: {e}")
+        await bot.send_message(msg.from_user.id, f"❌ Ошибка /mute: {e}")
 
 @dp.message(Command("unmute"))
 async def cmd_unmute(msg: Message):
     if not is_admin(msg.from_user.id):
         return
+    await hide_admin_cmd(msg)
     try:
         await bot.set_chat_permissions(
-            msg.chat.id,
+            GROUP_ID,
             ChatPermissions(
                 can_send_messages=True,
                 can_send_media_messages=True,
@@ -481,31 +491,40 @@ async def cmd_unmute(msg: Message):
                 can_add_web_page_previews=True
             )
         )
-        await msg.answer("🔊 Чат размучен! Все могут писать.")
+        await bot.send_message(GROUP_ID, "🔊 Чат размучен! Все могут писать.")
     except Exception as e:
-        await msg.answer(f"❌ Ошибка: {e}")
+        await bot.send_message(msg.from_user.id, f"❌ Ошибка /unmute: {e}")
 
 @dp.message(Command("start"))
 async def cmd_start(msg: Message):
     if msg.chat.type in ("group", "supergroup"):
-        await msg.answer(
-            f"👋 Я игровой бот. ID группы: {msg.chat.id}\n\n"
-            "🎰 /start777  ·  📚 /startquiz  ·  🎲 /start21\n"
-            "🔇 /mute  ·  🔊 /unmute\n"
-            "⏱ /jointime  ·  🎁 /prizes  ·  👤 /myprofile"
-        )
+        await msg.answer("👋 Я игровой бот! Пишите мне в ЛС для настройки.")
     else:
-        await msg.answer("👋 Добавь меня в группу и напиши /start там. /help")
+        await msg.answer(
+            "⚙️ ПАНЕЛЬ УПРАВЛЕНИЯ БОТОМ\n\n"
+            "🎮 Запуск игр в группу:\n"
+            "/start777  ·  /startquiz  ·  /start21\n\n"
+            "🔇 Модерация:\n"
+            "/mute — замутить группу\n"
+            "/unmute — размутить группу\n\n"
+            "⚙️ Настройки:\n"
+            "/jointime 900 — время набора\n"
+            "/schedule — расписание\n"
+            "/set /remove /clear_schedule /timezone\n"
+            "/prize /prizes /delivered"
+        )
 
 @dp.message(Command("help"))
 async def cmd_help(msg: Message):
-    await msg.answer(
+    await hide_admin_cmd(msg)
+    target = msg.from_user.id if msg.chat.type in ("group", "supergroup") else msg.chat.id
+    await bot.send_message(
+        target,
         "🎮 ИГРЫ: /start777 /startquiz /start21\n"
         "🔇 МОДЕРАЦИЯ: /mute /unmute\n"
-        f"⏱ /jointime 900 — время набора (сейчас {get_join_seconds()} сек / {get_join_seconds() // 60} мин)\n"
+        f"⏱ /jointime 900 — время набора (сейчас {get_join_seconds()} сек)\n"
         "📋 /schedule /set /remove /clear_schedule /timezone\n"
-        "🎁 /prize /prizes /delivered\n"
-        "👤 /myprofile — всем"
+        "🎁 /prize /prizes /delivered"
     )
 
 @dp.message(Command("myprofile"))
@@ -519,51 +538,56 @@ async def cmd_profile(msg: Message):
 @dp.message(Command("start777"))
 async def cmd_777(msg: Message):
     if is_admin(msg.from_user.id):
-        asyncio.create_task(launch_game("777", msg.chat.id))
+        await hide_admin_cmd(msg)
+        asyncio.create_task(launch_game("777", GROUP_ID))
 
 @dp.message(Command("startquiz"))
 async def cmd_quiz(msg: Message):
     if is_admin(msg.from_user.id):
-        asyncio.create_task(launch_game("quiz", msg.chat.id))
+        await hide_admin_cmd(msg)
+        asyncio.create_task(launch_game("quiz", GROUP_ID))
 
 @dp.message(Command("start21"))
 async def cmd_21(msg: Message):
     if is_admin(msg.from_user.id):
-        asyncio.create_task(launch_game("21", msg.chat.id))
+        await hide_admin_cmd(msg)
+        asyncio.create_task(launch_game("21", GROUP_ID))
 
 @dp.message(Command("jointime"))
 async def cmd_jointime(msg: Message):
     if not is_admin(msg.from_user.id):
         return
+    await hide_admin_cmd(msg)
     args = msg.text.split()
+    sec = get_join_seconds()
     if len(args) < 2:
-        sec = get_join_seconds()
-        await msg.answer(
+        await bot.send_message(
+            msg.from_user.id,
             f"⏱ Сейчас набор: {sec} сек. ({sec // 60} мин.)\n"
-            "Изменить: /jointime 900  (от 10 до 1800 сек / до 30 мин)"
+            "Изменить: /jointime 900  (от 10 до 1800 сек)"
         )
         return
     try:
-        sec = int(args[1])
+        val = int(args[1])
+        if 10 <= val <= 1800:
+            set_setting("join_seconds", val)
+            await bot.send_message(msg.from_user.id, f"✅ Время набора: {val} сек. ({val // 60} мин.).")
+        else:
+            await bot.send_message(msg.from_user.id, "От 10 до 1800 секунд.")
     except ValueError:
-        await msg.answer("Напиши число секунд, например: /jointime 900")
-        return
-    if not 10 <= sec <= 1800:
-        await msg.answer("От 10 до 1800 секунд (до 30 минут).")
-        return
-    set_setting("join_seconds", sec)
-    await msg.answer(f"✅ Время набора: {sec} сек. ({sec // 60} мин.). Применится к следующей игре.")
+        await bot.send_message(msg.from_user.id, "Напиши число секунд, например: /jointime 900")
 
 @dp.message(Command("schedule"))
 async def cmd_schedule(msg: Message):
     if not is_admin(msg.from_user.id):
         return
+    await hide_admin_cmd(msg)
     rows = get_schedule()
     if not rows:
-        await msg.answer(f"📋 Расписание пусто. Набор: {get_join_seconds()} сек, UTC+{get_timezone()}.")
+        await bot.send_message(msg.from_user.id, f"📋 Расписание пусто. Набор: {get_join_seconds()} сек, UTC+{get_timezone()}.")
         return
     t = "📋 Расписание:\n" + "\n".join(f"  {r['game']} — {r['day']} {r['time']}" for r in rows)
-    await msg.answer(t + f"\n⏱ Набор: {get_join_seconds()} сек | UTC+{get_timezone()}")
+    await bot.send_message(msg.from_user.id, t + f"\n⏱ Набор: {get_join_seconds()} сек | UTC+{get_timezone()}")
 
 DAYS_RU = ["ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"]
 
@@ -571,66 +595,76 @@ DAYS_RU = ["ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"]
 async def cmd_set(msg: Message):
     if not is_admin(msg.from_user.id):
         return
+    await hide_admin_cmd(msg)
     a = msg.text.split()
     if len(a) < 4 or a[1] not in GAME_META or a[2].upper() not in DAYS_RU:
-        await msg.answer("Формат: /set 777 ПН 18:00")
+        await bot.send_message(msg.from_user.id, "Формат: /set 777 ПН 18:00")
         return
     add_schedule(a[1], a[2].upper(), a[3])
-    await msg.answer(f"✅ {a[1]} — {a[2].upper()} {a[3]}")
+    await bot.send_message(msg.from_user.id, f"✅ {a[1]} — {a[2].upper()} {a[3]}")
 
 @dp.message(Command("remove"))
 async def cmd_remove(msg: Message):
-    if is_admin(msg.from_user.id) and len(msg.text.split()) > 1:
-        g = msg.text.split()[1]
-        remove_schedule(g)
-        await msg.answer(f"✅ {g} убрана")
+    if not is_admin(msg.from_user.id):
+        return
+    await hide_admin_cmd(msg)
+    a = msg.text.split()
+    if len(a) > 1:
+        remove_schedule(a[1])
+        await bot.send_message(msg.from_user.id, f"✅ {a[1]} убрана из расписания")
 
 @dp.message(Command("clear_schedule"))
 async def cmd_clear(msg: Message):
-    if is_admin(msg.from_user.id):
-        clear_schedule()
-        await msg.answer("✅ Расписание очищено")
+    if not is_admin(msg.from_user.id):
+        return
+    await hide_admin_cmd(msg)
+    clear_schedule()
+    await bot.send_message(msg.from_user.id, "✅ Расписание очищено")
 
 @dp.message(Command("timezone"))
 async def cmd_tz(msg: Message):
     if not is_admin(msg.from_user.id):
         return
+    await hide_admin_cmd(msg)
     a = msg.text.split()
     if len(a) < 2:
-        await msg.answer(f"UTC+{get_timezone()}. Изменить: /timezone 3")
+        await bot.send_message(msg.from_user.id, f"UTC+{get_timezone()}. Изменить: /timezone 3")
         return
     try:
         set_setting("tz", int(a[1]))
-        await msg.answer(f"✅ UTC+{get_timezone()}")
+        await bot.send_message(msg.from_user.id, f"✅ Часовой пояс: UTC+{get_timezone()}")
     except ValueError:
-        await msg.answer("Напиши число: /timezone 3")
+        await bot.send_message(msg.from_user.id, "Напиши число: /timezone 3")
 
 @dp.message(Command("prize"))
 async def cmd_prize(msg: Message):
     if not is_admin(msg.from_user.id):
         return
+    await hide_admin_cmd(msg)
     a = msg.text.split(maxsplit=2)
     if len(a) < 3 or a[1] not in GAME_META:
-        await msg.answer("Формат: /prize 777 Звёздный подарок")
+        await bot.send_message(msg.from_user.id, "Формат: /prize 777 Звёздный подарок")
         return
     set_prize(a[1], a[2])
-    await msg.answer(f"✅ Приз для {a[1]}: {a[2]}")
+    await bot.send_message(msg.from_user.id, f"✅ Приз для {a[1]}: {a[2]}")
 
 @dp.message(Command("prizes"))
 async def cmd_prizes(msg: Message):
     if not is_admin(msg.from_user.id):
         return
-    await msg.answer("🎁 Призы:\n" + "\n".join(
+    await hide_admin_cmd(msg)
+    await bot.send_message(msg.from_user.id, "🎁 Призы:\n" + "\n".join(
         f"  {g}: {get_prize(g)}" for g in GAME_META))
 
 @dp.message(Command("delivered"))
 async def cmd_delivered(msg: Message):
     if not is_admin(msg.from_user.id):
         return
+    await hide_admin_cmd(msg)
     a = msg.text.split()
     who = a[1] if len(a) > 1 else "?"
     mark_delivered(who)
-    await msg.answer(f"✅ Вручение {who} отмечено!")
+    await bot.send_message(msg.from_user.id, f"✅ Вручение {who} отмечено!")
 
 # ============================================
 # РАСПИСАНИЕ 24/7
