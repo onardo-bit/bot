@@ -28,13 +28,14 @@ cur = db.cursor()
 cur.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT, name TEXT)")
 cur.execute("CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)")
 cur.execute("CREATE TABLE IF NOT EXISTS prizes (game TEXT PRIMARY KEY, text TEXT)")
-cur.execute("CREATE TABLE IF NOT EXISTS stats (id INTEGER PRIMARY KEY, wins_777 INTEGER DEFAULT 0, wins_21 INTEGER DEFAULT 0, wins_quiz INTEGER DEFAULT 0, wins_roulette INTEGER DEFAULT 0)")
+cur.execute("CREATE TABLE IF NOT EXISTS chance_cooldown (id INTEGER PRIMARY KEY, last_ts REAL)")
+cur.execute("CREATE TABLE IF NOT EXISTS stats (id INTEGER PRIMARY KEY, wins_777 INTEGER DEFAULT 0, wins_21 INTEGER DEFAULT 0, wins_quiz INTEGER DEFAULT 0, wins_roulette INTEGER DEFAULT 0, luck_points INTEGER DEFAULT 0)")
 
-# Авто-добавление колонки wins_roulette, если БД создана ранее
-try:
-    cur.execute("ALTER TABLE stats ADD COLUMN wins_roulette INTEGER DEFAULT 0")
-except:
-    pass
+# Авто-добавление колонок при обновлении БД
+try: cur.execute("ALTER TABLE stats ADD COLUMN wins_roulette INTEGER DEFAULT 0")
+except: pass
+try: cur.execute("ALTER TABLE stats ADD COLUMN luck_points INTEGER DEFAULT 0")
+except: pass
 db.commit()
 
 def get_config(key, default):
@@ -56,6 +57,11 @@ def add_win(uid: int, game_type: str):
         cur.execute("UPDATE stats SET wins_quiz = wins_quiz + 1 WHERE id=?", (uid,))
     elif game_type == "roulette":
         cur.execute("UPDATE stats SET wins_roulette = wins_roulette + 1 WHERE id=?", (uid,))
+    db.commit()
+
+def add_luck_points(uid: int, points: int):
+    cur.execute("INSERT OR IGNORE INTO stats (id) VALUES (?)", (uid,))
+    cur.execute("UPDATE stats SET luck_points = luck_points + ? WHERE id=?", (points, uid))
     db.commit()
 
 # --- БАЗА ВОПРОСОВ ДЛЯ ВИКТОРИНЫ ---
@@ -125,18 +131,106 @@ async def safe_send_message(chat_id: int, text: str, **kwargs):
     except Exception as e:
         print(f"Ошибка отправки сообщения: {e}")
 
+# --- ЕЖЕДНЕВНОЕ КОЛЕСО ФОРТУНЫ (/chance) ---
+@dp.message(Command("chance"))
+async def chance_handler(message: types.Message):
+    uid = message.from_user.id
+    now = time.time()
+    
+    # Проверка таймера (24 часа = 86400 секунд)
+    cur.execute("SELECT last_ts FROM chance_cooldown WHERE id=?", (uid,))
+    res = cur.fetchone()
+    
+    if res and (now - res[0]) < 86400:
+        remaining = int(86400 - (now - res[0]))
+        hours = remaining // 3600
+        minutes = (remaining % 3600) // 60
+        mention = get_mention(uid, message.from_user.username)
+        await message.reply(
+            f"⏳ {mention}, вы уже испытала удачу сегодня!\n"
+            f"Следующая попытка будет доступна через: <b>{hours} ч. {minutes} мин.</b>",
+            parse_mode="HTML"
+        )
+        return
+
+    # Фиксируем время попытки
+    cur.execute("INSERT OR REPLACE INTO chance_cooldown VALUES (?, ?)", (uid, now))
+    db.commit()
+
+    mention = get_mention(uid, message.from_user.username)
+    await message.reply(f"🎰 {mention} крутит **Ежедневное Колесо Фортуны**...", parse_mode="HTML")
+    
+    # Запуск автомата 🎰
+    dice_msg = await bot.send_dice(message.chat.id, emoji="🎰")
+    val = dice_msg.dice.value
+    await asyncio.sleep(2.0)
+
+    # Варианты выигрыша:
+    if val == 64: # 3x777
+        add_luck_points(uid, 100)
+        await message.reply(
+            f"💎 <b>НЕВЕРОЯТНЫЙ ДЖЕКПOТ! 7️⃣7️⃣7️⃣</b>\n\n"
+            f"🎉 {mention} выбивает ДЖЕКПOТ ДНЯ!\n"
+            f"⭐ Получено: <b>+100 Очков Удачи</b>!\n"
+            f"🎁 Свяжитесь с админом @{ADMIN_USERNAME} для получения ежедневного бонуса!",
+            parse_mode="HTML"
+        )
+    elif val in [1, 22, 43]: # Три в ряд (кроме 777)
+        add_luck_points(uid, 50)
+        await message.reply(
+            f"👑 <b>КОРОЛЕВСКИЙ КУШ!</b>\n\n"
+            f"✨ {mention} выбивает редкое совпадение!\n"
+            f"⭐ Получено: <b>+50 Очков Удачи</b>!",
+            parse_mode="HTML"
+        )
+    elif val > 30: # Хороший результат
+        pts = random.randint(15, 30)
+        add_luck_points(uid, pts)
+        await message.reply(
+            f"🍀 <b>УДАЧНЫЙ БРОСОК!</b>\n\n"
+            f"👍 {mention}, Фортуна вам улыбнулась!\n"
+            f"⭐ Начислено: <b>+{pts} Очков Удачи</b>!",
+            parse_mode="HTML"
+        )
+    else: # Утешительный приз
+        fun_gifts = [
+            "🍌 Банановую кожуру и +5 Очков Удачи",
+            "👞 Старый сапог и +5 Очков Удачи",
+            "🪙 Старинную монетку и +10 Очков Удачи",
+            "🍕 Кусочек пиццы и +5 Очков Удачи"
+        ]
+        gift = random.choice(fun_gifts)
+        add_luck_points(uid, 5)
+        await message.reply(
+            f"🎁 <b>УТЕШИТЕЛЬНЫЙ ПРИЗ!</b>\n\n"
+            f"{mention} получает: {gift}!",
+            parse_mode="HTML"
+        )
+
 # --- КОМАНДЫ (ДЛЯ ВСЕХ) ---
 @dp.message(Command("profile"))
 async def show_profile(message: types.Message):
     uid = message.from_user.id
-    cur.execute("SELECT wins_777, wins_21, wins_quiz, wins_roulette FROM stats WHERE id=?", (uid,))
+    cur.execute("SELECT wins_777, wins_21, wins_quiz, wins_roulette, luck_points FROM stats WHERE id=?", (uid,))
     res = cur.fetchone()
-    w777, w21, wq, wr = res if res else (0, 0, 0, 0)
+    w777, w21, wq, wr, lp = res if res else (0, 0, 0, 0, 0)
     
+    # Статус Колеса фортуны
+    cur.execute("SELECT last_ts FROM chance_cooldown WHERE id=?", (uid,))
+    c_res = cur.fetchone()
+    now = time.time()
+    if not c_res or (now - c_res[0]) >= 86400:
+        chance_status = "✅ Готово к броску! (/chance)"
+    else:
+        rem = int(86400 - (now - c_res[0]))
+        chance_status = f"⏳ Через {rem // 3600} ч. {(rem % 3600) // 60} мин."
+
     text = (
         f"👤 <b>Профиль игрока:</b> {message.from_user.full_name}\n"
         f"🆔 ID: <code>{uid}</code>\n"
-        f"🎮 Тег: {get_mention(uid, message.from_user.username)}\n\n"
+        f"🎮 Тег: {get_mention(uid, message.from_user.username)}\n"
+        f"⭐ <b>Очки Удачи:</b> <code>{lp}</code>\n"
+        f"🎰 <b>Колесо Фортуны:</b> {chance_status}\n\n"
         f"🏆 <b>СТАТИСТИКА ПОБЕД:</b>\n"
         f"🎰 Лудка 777: <b>{w777}</b>\n"
         f"🎲 Игра 21: <b>{w21}</b>\n"
@@ -552,17 +646,14 @@ async def process_roulette_game():
     initial_players = [dict(p) for p in players_queue]
     winner = None
 
-    # Создаём барабан из 6 камор (1 патрон)
     cylinder = [True] + [False] * 5
     random.shuffle(cylinder)
 
     while game_roulette_active and not winner:
-        # Остался 1 выживший — он победитель!
         if len(players_queue) == 1:
             winner = players_queue[0]
             break
 
-        # Если выбыли все — перезапуск раунда
         if not players_queue:
             await safe_send_message(GROUP_ID, "🔄 Все игроки погибли! Перезапуск револьвера...")
             players_queue = [dict(p) for p in initial_players]
@@ -594,19 +685,16 @@ async def process_roulette_game():
             if not game_roulette_active: break
 
             await asyncio.sleep(1.0)
-
-            # Проверяем выстрел
             is_bullet = cylinder.pop(0)
 
             if is_bullet:
                 await safe_send_message(GROUP_ID, f"💥 <b>БАНГ!</b> Выстрел прогремел! {mention} <b>ВЫБЫВАЕТ</b> из игры!")
-                # Перезаряжаем и прокручиваем барабан заново
                 cylinder = [True] + [False] * 5
                 random.shuffle(cylinder)
             else:
                 await safe_send_message(GROUP_ID, f"🔕 <b>ЩЁЛК!</b> Камора пуста. {mention} выживает и пасы передаются далее!")
                 players_queue.append(player)
-                if not cylinder: # Если вдруг кончились каморы
+                if not cylinder:
                     cylinder = [True] + [False] * 5
                     random.shuffle(cylinder)
 
