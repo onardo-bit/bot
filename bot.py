@@ -1,5 +1,6 @@
 import os
 import asyncio
+import random
 import sqlite3
 import time
 from aiogram import Bot, Dispatcher, types, F
@@ -27,7 +28,13 @@ cur = db.cursor()
 cur.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT, name TEXT)")
 cur.execute("CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)")
 cur.execute("CREATE TABLE IF NOT EXISTS prizes (game TEXT PRIMARY KEY, text TEXT)")
-cur.execute("CREATE TABLE IF NOT EXISTS stats (id INTEGER PRIMARY KEY, wins_777 INTEGER DEFAULT 0, wins_21 INTEGER DEFAULT 0, wins_quiz INTEGER DEFAULT 0)")
+cur.execute("CREATE TABLE IF NOT EXISTS stats (id INTEGER PRIMARY KEY, wins_777 INTEGER DEFAULT 0, wins_21 INTEGER DEFAULT 0, wins_quiz INTEGER DEFAULT 0, wins_roulette INTEGER DEFAULT 0)")
+
+# Авто-добавление колонки wins_roulette, если БД создана ранее
+try:
+    cur.execute("ALTER TABLE stats ADD COLUMN wins_roulette INTEGER DEFAULT 0")
+except:
+    pass
 db.commit()
 
 def get_config(key, default):
@@ -47,20 +54,50 @@ def add_win(uid: int, game_type: str):
         cur.execute("UPDATE stats SET wins_21 = wins_21 + 1 WHERE id=?", (uid,))
     elif game_type == "quiz":
         cur.execute("UPDATE stats SET wins_quiz = wins_quiz + 1 WHERE id=?", (uid,))
+    elif game_type == "roulette":
+        cur.execute("UPDATE stats SET wins_roulette = wins_roulette + 1 WHERE id=?", (uid,))
     db.commit()
+
+# --- БАЗА ВОПРОСОВ ДЛЯ ВИКТОРИНЫ ---
+QUIZ_QUESTION_POOL = [
+    ("Сколько планет в Солнечной системе?", ["7", "8", "9", "10"], 1),
+    ("Какой химический символ у Золота?", ["Ag", "Fe", "Au", "Pb"], 2),
+    ("В каком году человек впервые полетел в космос?", ["1957", "1961", "1965", "1969"], 1),
+    ("Столица Франции?", ["Берлин", "Париж", "Рим", "Мадрид"], 1),
+    ("Корень из 144?", ["10", "11", "12", "14"], 2),
+    ("Какая самая длинная река в мире?", ["Амазонка", "Нил", "Миссисипи", "Янцзы"], 0),
+    ("Сколько хромосом у здорового человека?", ["42", "44", "46", "48"], 2),
+    ("Кто написал роман 'Война и мир'?", ["Достоевский", "Толстой", "Пушкин", "Тургенев"], 1),
+    ("Какая планета самая большая в Солнечной системе?", ["Марс", "Сатурн", "Юпитер", "Нептун"], 2),
+    ("Какое вещество самое твёрдое на Земле?", ["Графен", "Алмаз", "Титан", "Кварц"], 1),
+    ("Сколько материков на Земле?", ["5", "6", "7", "8"], 1),
+    ("В каком году началась Вторая мировая война?", ["1914", "1939", "1941", "1945"], 1),
+    ("Какая птица не умеет летать, но отлично плавает?", ["Орёл", "Пингвин", "Страус", "Пеликан"], 1),
+    ("Какое число обозначается римской цифрой 'X'?", ["5", "10", "50", "100"], 1),
+    ("Какой газ преобладает в атмосфере Земли?", ["Кислород", "Азот", "Углекислый газ", "Водород"], 1),
+    ("Сколько граней у классического куба?", ["4", "6", "8", "12"], 1),
+    ("Кто открыл закон всемирного тяготения?", ["Эйнштейн", "Ньютон", "Галилей", "Тесла"], 1),
+    ("Какая страна самая большая по площади?", ["Канада", "Китай", "США", "Россия"], 3),
+    ("Как называется ближайшая к Земле звезда?", ["Сириус", "Солнце", "Проксима Центавра", "Полярная"], 1),
+    ("Какое животное является самым быстрым на суше?", ["Лев", "Гепард", "Антилопа", "Сокол"], 1),
+    ("Сколько градусов составляет сумма углов треугольника?", ["90°", "180°", "270°", "360°"], 1),
+    ("Какая океанская впадина является самой глубокой?", ["Марианская", "Бермудская", "Зондская", "Пуэрто-Рико"], 0),
+    ("Кто написал поэму 'Евгений Онегин'?", ["Пушкин", "Лермонтов", "Гоголь", "Чехов"], 0),
+    ("Какое озеро является самым глубоким в мире?", ["Виктория", "Мичиган", "Байкал", "Каспийское"], 2),
+    ("Какой элемент обозначается буквой 'O' в таблице Менделеева?", ["Олово", "Кислород", "Осмий", "Озон"], 1)
+]
 
 # --- СОСТОЯНИЯ ИГР ---
 game_777_active = False
 game_quiz_active = False
 game_21_active = False
+game_roulette_active = False
 
 reg_users = []  
 quiz_scores = {} 
 
-# Глобальные переменные для интерактива в Игре 21
-turn_event = asyncio.Event()
-current_21_player_id = None
-current_21_dice_value = 0
+active_turn_21 = None 
+active_turn_rr = None
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 async def is_admin(user_id: int) -> bool:
@@ -92,9 +129,9 @@ async def safe_send_message(chat_id: int, text: str, **kwargs):
 @dp.message(Command("profile"))
 async def show_profile(message: types.Message):
     uid = message.from_user.id
-    cur.execute("SELECT wins_777, wins_21, wins_quiz FROM stats WHERE id=?", (uid,))
+    cur.execute("SELECT wins_777, wins_21, wins_quiz, wins_roulette FROM stats WHERE id=?", (uid,))
     res = cur.fetchone()
-    w777, w21, wq = res if res else (0, 0, 0)
+    w777, w21, wq, wr = res if res else (0, 0, 0, 0)
     
     text = (
         f"👤 <b>Профиль игрока:</b> {message.from_user.full_name}\n"
@@ -103,7 +140,8 @@ async def show_profile(message: types.Message):
         f"🏆 <b>СТАТИСТИКА ПОБЕД:</b>\n"
         f"🎰 Лудка 777: <b>{w777}</b>\n"
         f"🎲 Игра 21: <b>{w21}</b>\n"
-        f"🎓 Викторина: <b>{wq}</b>"
+        f"🎓 Викторина: <b>{wq}</b>\n"
+        f"🔫 Русская Рулетка: <b>{wr}</b>"
     )
     await message.answer(text, parse_mode="HTML")
 
@@ -111,7 +149,7 @@ async def show_profile(message: types.Message):
 async def show_admin(message: types.Message):
     await message.answer(f"👑 <b>Главный администратор:</b> @{ADMIN_USERNAME}\nПо вопросам призов и предложений пишите ему.", parse_mode="HTML")
 
-# --- УПРАВЛЕНИЕ ЧАТОМ И ИГРАМИ (ДЛЯ АДМИНА) ---
+# --- АДМИН-УПРАВЛЕНИЕ ---
 @dp.message(Command("chat"))
 async def chat_control(message: types.Message):
     if not await is_admin(message.from_user.id): return
@@ -119,7 +157,7 @@ async def chat_control(message: types.Message):
     
     args = message.text.split()
     if len(args) < 2:
-        await message.answer("Используйте: `/chat -` (закрыть) или `/chat +` (открыть)", parse_mode="Markdown")
+        await message.answer("Используйте: `/chat -` (закрыть) или `/chat +` (открыть)")
         return
         
     try:
@@ -145,13 +183,14 @@ async def cancel_all_games(message: types.Message):
     if not await is_admin(message.from_user.id): return
     await hide_admin_cmd(message)
     
-    global game_777_active, game_21_active, game_quiz_active, turn_event
+    global game_777_active, game_21_active, game_quiz_active, game_roulette_active, active_turn_21, active_turn_rr
     game_777_active = False
     game_21_active = False
     game_quiz_active = False
+    game_roulette_active = False
     
-    if turn_event: 
-        turn_event.set() # Разблокируем зависшие таймеры
+    if active_turn_21 and active_turn_21.get('event'): active_turn_21['event'].set()
+    if active_turn_rr and active_turn_rr.get('event'): active_turn_rr['event'].set()
         
     await safe_send_message(GROUP_ID, "🛑 <b>ВНИМАНИЕ!</b>\nВсе текущие игры были принудительно отменены администратором!")
 
@@ -185,7 +224,7 @@ async def start_777(message: types.Message):
     game_777_active = True
     await safe_send_message(
         GROUP_ID,
-        "🎰 <b>ИГРА «ЛУДКА 777» НАЧАЛАСЬ!</b>\n\nОтправляйте эмодзи 🎰 в чат.\nКто первым выбьет 7️⃣7️⃣7️⃣ — тот победил!"
+        "🎰 <b>ИГРА «ЛУДКА 777» НАЧАЛАСЬ!</b>\n\nОтправляйте эмодзи 🎰 со своей клавиатуры в чат.\nКто первым выбьет 7️⃣7️⃣7️⃣ — тот победил!"
     )
 
 @dp.message(F.dice.emoji == "🎰")
@@ -207,7 +246,7 @@ async def check_777_roll(message: types.Message):
             f"За призом к @{ADMIN_USERNAME}", parse_mode="HTML"
         )
 
-# --- ИГРА 2: ИГРА 21 (ИНТЕРАКТИВНАЯ) ---
+# --- ИГРА 2: ИГРА 21 ---
 @dp.message(Command("start21"))
 async def start_21(message: types.Message):
     global game_21_active, reg_users
@@ -222,7 +261,7 @@ async def start_21(message: types.Message):
         InlineKeyboardButton(text="Участвовать 🎲", callback_data="reg_21")
     ]])
 
-    await safe_send_message(GROUP_ID, f"🎲 <b>РЕГИСТРАЦИЯ НА ИГРУ «21»</b>\n\nЖми кнопку! Время: <b>{join_time} сек.</b>", reply_markup=kb)
+    await safe_send_message(GROUP_ID, f"🎲 <b>РЕГИСТРАЦИЯ НА ИГРУ «21»</b>\n\nЖми кнопку ниже! Время: <b>{join_time} сек.</b>", reply_markup=kb)
     await asyncio.sleep(join_time)
     await process_21_game()
 
@@ -233,99 +272,109 @@ async def register_21_user(callback: types.CallbackQuery):
         cur.execute("INSERT OR REPLACE INTO users (id, username, name) VALUES (?, ?, ?)", 
                     (callback.from_user.id, callback.from_user.username, callback.from_user.full_name))
         db.commit()
-        await callback.answer("Успешно!")
+        await callback.answer("Вы зарегистрированы!")
     else:
-        await callback.answer("Вы уже в игре!")
+        await callback.answer("Вы уже участвуете!")
 
 @dp.callback_query(F.data == "roll_21")
 async def process_user_roll(callback: types.CallbackQuery):
-    global current_21_dice_value
-    if not game_21_active:
-        await callback.answer("Игра остановлена.")
+    global active_turn_21
+    if not game_21_active or not active_turn_21:
+        await callback.answer("Сейчас нельзя бросить кубик.", show_alert=True)
         return
-    if callback.from_user.id != current_21_player_id:
+    if callback.from_user.id != active_turn_21['player_id']:
         await callback.answer("⏳ Сейчас не ваш ход!", show_alert=True)
         return
         
+    active_turn_21['player_id'] = None 
     try: await callback.message.edit_reply_markup(reply_markup=None)
     except: pass
 
     dice_msg = await bot.send_dice(GROUP_ID, emoji="🎲")
-    current_21_dice_value = dice_msg.dice.value
-    
-    turn_event.set()
+    active_turn_21['dice_value'] = dice_msg.dice.value
+    active_turn_21['event'].set()
     await callback.answer("Кубик брошен!")
 
 async def process_21_game():
-    global game_21_active, current_21_player_id, turn_event
+    global game_21_active, active_turn_21
     if not reg_users:
-        await safe_send_message(GROUP_ID, "❌ Никто не пришёл. Игра «21» отменена.")
+        await safe_send_message(GROUP_ID, "❌ Никто не зарегистрировался. Игра «21» отменена.")
         game_21_active = False
         return
 
     players_queue = []
     for uid in reg_users:
         cur.execute("SELECT username FROM users WHERE id=?", (uid,))
-        un = cur.fetchone()[0]
-        players_queue.append({"id": uid, "un": un, "score": 0, "busts": 0})
+        res = cur.fetchone()
+        un = res[0] if res else None
+        players_queue.append({"id": uid, "un": un, "score": 0})
 
     mentions = [get_mention(p["id"], p["un"]) for p in players_queue]
-    await safe_send_message(GROUP_ID, f"🚀 <b>ИГРА НАЧИНАЕТСЯ!</b>\n\n👥 <b>Участники:</b> {', '.join(mentions)}\n\n📌 <i>Правила: В свой ход у вас есть 60 секунд, чтобы нажать кнопку. Иначе — вылет!</i>")
+    await safe_send_message(
+        GROUP_ID, 
+        f"🚀 <b>ИГРА «21» НАЧАЛАСЬ!</b>\n\n"
+        f"👥 <b>Участники:</b> {', '.join(mentions)}\n\n"
+        f"📌 <i>Правила: 60 секунд на ход. Перебор (>21) = ВЫЛЕТ!</i>"
+    )
 
     initial_players = [dict(p) for p in players_queue]
     winner = None
 
     while game_21_active and not winner:
+        if len(players_queue) == 1:
+            winner = players_queue[0]
+            break
+
         if not players_queue:
-            await safe_send_message(GROUP_ID, "🔄 Все вылетели! Начинаем раунд заново...")
+            await safe_send_message(GROUP_ID, "🔄 Все игроки выбыли! Начинаем раунд заново...")
             players_queue = [dict(p) for p in initial_players]
-            for p in players_queue: p["score"] = p["busts"] = 0
+            for p in players_queue: p["score"] = 0
             continue
 
         player = players_queue.pop(0)
-        current_21_player_id = player["id"]
-        turn_event.clear()
-        
         mention = get_mention(player["id"], player["un"])
+        
+        turn_event = asyncio.Event()
+        active_turn_21 = {
+            'player_id': player["id"],
+            'event': turn_event,
+            'dice_value': 0
+        }
+
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="Кинуть 🎲", callback_data="roll_21")
         ]])
         
         turn_msg = await safe_send_message(
             GROUP_ID, 
-            f"🎲 Ход игрока {mention} (Сумма: {player['score']})\n⏳ У вас ровно <b>60 секунд</b>!", 
+            f"🎲 Ход игрока {mention} (Сумма: <b>{player['score']}</b>)\n⏳ У вас <b>60 секунд</b>!", 
             reply_markup=kb
         )
 
         try:
             await asyncio.wait_for(turn_event.wait(), timeout=60.0)
             if not game_21_active: break
-            
+
             await asyncio.sleep(1.5)
-            val = current_21_dice_value
+            val = active_turn_21['dice_value']
             player["score"] += val
-            
-            await safe_send_message(GROUP_ID, f"{mention}: 🎲 Выпало <b>{val}</b> | Сумма: <b>{player['score']}</b>")
+
+            await safe_send_message(GROUP_ID, f"{mention}: 🎲 Выпало <b>{val}</b> | Текущая сумма: <b>{player['score']}</b>")
 
             if player["score"] == 21:
                 winner = player
                 break
             elif player["score"] > 21:
-                if player["busts"] == 0:
-                    player["busts"] = 1; player["score"] = 0
-                    players_queue.append(player)
-                    await safe_send_message(GROUP_ID, f"💥 {mention} превысил 21! Обнуление. Дан последний шанс.")
-                else:
-                    await safe_send_message(GROUP_ID, f"❌ {mention} снова превысил 21 и окончательно выбывает!")
+                await safe_send_message(GROUP_ID, f"💥 {mention} набрал <b>{player['score']}</b> (>21) и <b>ВЫБЫВАЕТ</b> из игры!")
             else:
                 players_queue.append(player)
-                
+
         except asyncio.TimeoutError:
             try: await turn_msg.edit_reply_markup(reply_markup=None)
             except: pass
-            await safe_send_message(GROUP_ID, f"⏰ Время вышло! {mention} проигнорировал свой ход и <b>исключается</b> из игры.")
-            
-        current_21_player_id = None
+            await safe_send_message(GROUP_ID, f"⏰ Время вышло! {mention} проигнорировал ход и <b>ВЫБЫВАЕТ</b>!")
+
+        active_turn_21 = None
         await asyncio.sleep(2.0)
 
     if winner:
@@ -335,8 +384,9 @@ async def process_21_game():
         pz = cur.fetchone()
         await safe_send_message(
             GROUP_ID,
-            f"🏆 <b>ПОБЕДИТЕЛЬ В 21:</b> {get_mention(winner['id'], winner['un'])}\n"
-            f"🎯 Набрал ровно <b>21</b>!\n🎁 Приз: {pz[0] if pz else 'Не указан'}\n\nПиши @{ADMIN_USERNAME}!"
+            f"🏆 <b>ЕДИНСТВЕННЫЙ ПОБЕДИТЕЛЬ В 21:</b> {get_mention(winner['id'], winner['un'])}\n"
+            f"🎯 Результат: <b>{winner['score']}</b>!\n"
+            f"🎁 Приз: {pz[0] if pz else 'Не указан'}\n\nНапишите @{ADMIN_USERNAME}!"
         )
 
 # --- ИГРА 3: ВИКТОРИНА ---
@@ -355,7 +405,7 @@ async def start_quiz(message: types.Message):
         InlineKeyboardButton(text="Участвовать 🎓", callback_data="reg_quiz")
     ]])
 
-    await safe_send_message(GROUP_ID, f"🎓 <b>ВИКТОРИНА!</b>\n\n5 вопросов. Время на вход: <b>{join_time} сек.</b>", reply_markup=kb)
+    await safe_send_message(GROUP_ID, f"🎓 <b>ВИКТОРИНА!</b>\n\n5 случайных вопросов. Время на вход: <b>{join_time} сек.</b>", reply_markup=kb)
     await asyncio.sleep(join_time)
     await run_quiz_questions()
 
@@ -381,18 +431,15 @@ async def run_quiz_questions():
     mentions = []
     for uid in reg_users:
         cur.execute("SELECT username FROM users WHERE id=?", (uid,))
-        mentions.append(get_mention(uid, cur.fetchone()[0]))
+        res = cur.fetchone()
+        un = res[0] if res else None
+        mentions.append(get_mention(uid, un))
+        
     await safe_send_message(GROUP_ID, f"🧠 <b>ВИКТОРИНА НАЧИНАЕТСЯ!</b>\n\n👥 <b>Участники:</b> {', '.join(mentions)}")
 
-    questions = [
-        ("Сколько планет в Солнечной системе?", ["7", "8", "9", "10"], 1),
-        ("Какой химический символ у Золота?", ["Ag", "Fe", "Au", "Pb"], 2),
-        ("В каком году человек впервые полетел в космос?", ["1957", "1961", "1965", "1969"], 1),
-        ("Столица Франции?", ["Берлин", "Париж", "Рим", "Мадрид"], 1),
-        ("Корень из 144?", ["10", "11", "12", "14"], 2)
-    ]
+    selected_questions = random.sample(QUIZ_QUESTION_POOL, 5)
 
-    for q_text, opts, correct_idx in questions:
+    for q_text, opts, correct_idx in selected_questions:
         if not game_quiz_active: break
         await bot.send_poll(
             chat_id=GROUP_ID, question=q_text, options=opts, is_anonymous=False, 
@@ -427,6 +474,160 @@ async def process_poll_answer(poll_answer: PollAnswer):
     if poll_answer.user_id in quiz_scores:
         quiz_scores[poll_answer.user_id]["score"] += 1
         quiz_scores[poll_answer.user_id]["last_ts"] = time.time()
+
+# --- ИГРА 4: РУССКАЯ РУЛЕТКА ---
+@dp.message(Command("startroulette"))
+async def start_roulette(message: types.Message):
+    global game_roulette_active, reg_users
+    if not await is_admin(message.from_user.id): return
+    await hide_admin_cmd(message)
+
+    game_roulette_active = True
+    reg_users = []
+    join_time = int(get_config("jointime", 900))
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Участвовать 🔫", callback_data="reg_rr")
+    ]])
+
+    await safe_send_message(
+        GROUP_ID, 
+        f"🔫 <b>РЕГИСТРАЦИЯ НА «РУССКУЮ РУЛЕТКУ»</b>\n\n"
+        f"Испытай удачу! Регистрация длится <b>{join_time} сек.</b>", 
+        reply_markup=kb
+    )
+    await asyncio.sleep(join_time)
+    await process_roulette_game()
+
+@dp.callback_query(F.data == "reg_rr")
+async def register_rr_user(callback: types.CallbackQuery):
+    if callback.from_user.id not in reg_users:
+        reg_users.append(callback.from_user.id)
+        cur.execute("INSERT OR REPLACE INTO users (id, username, name) VALUES (?, ?, ?)", 
+                    (callback.from_user.id, callback.from_user.username, callback.from_user.full_name))
+        db.commit()
+        await callback.answer("Вы зарегистрированы на Рулетку!")
+    else:
+        await callback.answer("Вы уже участвуете!")
+
+@dp.callback_query(F.data == "shot_rr")
+async def process_rr_shot(callback: types.CallbackQuery):
+    global active_turn_rr
+    if not game_roulette_active or not active_turn_rr:
+        await callback.answer("Сейчас нельзя спустить курок.", show_alert=True)
+        return
+    if callback.from_user.id != active_turn_rr['player_id']:
+        await callback.answer("⏳ Сейчас не ваш ход!", show_alert=True)
+        return
+
+    active_turn_rr['player_id'] = None
+    try: await callback.message.edit_reply_markup(reply_markup=None)
+    except: pass
+
+    active_turn_rr['event'].set()
+    await callback.answer("Вы спустили курок...")
+
+async def process_roulette_game():
+    global game_roulette_active, active_turn_rr
+    if not reg_users:
+        await safe_send_message(GROUP_ID, "❌ Никто не зарегистрировался. Русская Рулетка отменена.")
+        game_roulette_active = False
+        return
+
+    players_queue = []
+    for uid in reg_users:
+        cur.execute("SELECT username FROM users WHERE id=?", (uid,))
+        res = cur.fetchone()
+        un = res[0] if res else None
+        players_queue.append({"id": uid, "un": un})
+
+    mentions = [get_mention(p["id"], p["un"]) for p in players_queue]
+    await safe_send_message(
+        GROUP_ID, 
+        f"🔫 <b>РУССКАЯ РУЛЕТКА НАЧИНАЕТСЯ!</b>\n\n"
+        f"👥 <b>Участники:</b> {', '.join(mentions)}\n\n"
+        f"⚙️ <i>Барабан заряжен (1 патрон из 6). У вас 60 секунд на ход!</i>"
+    )
+
+    initial_players = [dict(p) for p in players_queue]
+    winner = None
+
+    # Создаём барабан из 6 камор (1 патрон)
+    cylinder = [True] + [False] * 5
+    random.shuffle(cylinder)
+
+    while game_roulette_active and not winner:
+        # Остался 1 выживший — он победитель!
+        if len(players_queue) == 1:
+            winner = players_queue[0]
+            break
+
+        # Если выбыли все — перезапуск раунда
+        if not players_queue:
+            await safe_send_message(GROUP_ID, "🔄 Все игроки погибли! Перезапуск револьвера...")
+            players_queue = [dict(p) for p in initial_players]
+            cylinder = [True] + [False] * 5
+            random.shuffle(cylinder)
+            continue
+
+        player = players_queue.pop(0)
+        mention = get_mention(player["id"], player["un"])
+
+        turn_event = asyncio.Event()
+        active_turn_rr = {
+            'player_id': player["id"],
+            'event': turn_event
+        }
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="Спустить курок 💥", callback_data="shot_rr")
+        ]])
+
+        turn_msg = await safe_send_message(
+            GROUP_ID, 
+            f"🎯 Ход игрока {mention}\n⏳ У вас <b>60 секунд</b>, чтобы спустить курок!", 
+            reply_markup=kb
+        )
+
+        try:
+            await asyncio.wait_for(turn_event.wait(), timeout=60.0)
+            if not game_roulette_active: break
+
+            await asyncio.sleep(1.0)
+
+            # Проверяем выстрел
+            is_bullet = cylinder.pop(0)
+
+            if is_bullet:
+                await safe_send_message(GROUP_ID, f"💥 <b>БАНГ!</b> Выстрел прогремел! {mention} <b>ВЫБЫВАЕТ</b> из игры!")
+                # Перезаряжаем и прокручиваем барабан заново
+                cylinder = [True] + [False] * 5
+                random.shuffle(cylinder)
+            else:
+                await safe_send_message(GROUP_ID, f"🔕 <b>ЩЁЛК!</b> Камора пуста. {mention} выживает и пасы передаются далее!")
+                players_queue.append(player)
+                if not cylinder: # Если вдруг кончились каморы
+                    cylinder = [True] + [False] * 5
+                    random.shuffle(cylinder)
+
+        except asyncio.TimeoutError:
+            try: await turn_msg.edit_reply_markup(reply_markup=None)
+            except: pass
+            await safe_send_message(GROUP_ID, f"🐔 Время вышло! {mention} струсил, не спустил курок и <b>ДИСКВАЛИФИЦИРУЕТСЯ</b>!")
+
+        active_turn_rr = None
+        await asyncio.sleep(2.0)
+
+    if winner:
+        game_roulette_active = False
+        add_win(winner['id'], "roulette")
+        cur.execute("SELECT text FROM prizes WHERE game='roulette'")
+        pz = cur.fetchone()
+        await safe_send_message(
+            GROUP_ID,
+            f"🏆 <b>ЕДИНСТВЕННЫЙ ВЫЖИВШИЙ В РУЛЕТКЕ:</b> {get_mention(winner['id'], winner['un'])}\n"
+            f"🎁 Приз: {pz[0] if pz else 'Не указан'}\n\nНапишите @{ADMIN_USERNAME} для получения!"
+        )
 
 # --- СТАРТ ---
 async def main():
