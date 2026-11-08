@@ -1,21 +1,20 @@
 import os
 import asyncio
-import random
 import sqlite3
 import time
-from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, PollAnswer, ChatPermissions
+from aiogram.exceptions import TelegramMigrateToChat, TelegramBadRequest
 
 # --- КОНФИГУРАЦИЯ ---
 TOKEN = os.getenv("BOT_TOKEN")
 
 ADMIN_IDS = [7004839619]
 ADMIN_USERNAME = "onardo-bit"
-# Обновленный ID супергруппы из вашего лога:
+# Актуальный ID супергруппы:
 GROUP_ID = -1004382624629 
-EXACT_777_VALUE = 64 # Значение диска 🎰 для 777
+EXACT_777_VALUE = 64 # Значение 🎰 для 777
 
 if not TOKEN:
     print("⚠️ ОШИБКА: Переменная BOT_TOKEN не установлена в Railway!")
@@ -65,6 +64,17 @@ def get_mention(user_id: int, username: str = None) -> str:
         return f"@{username}"
     return f"ID:{user_id}"
 
+async def safe_send_message(chat_id: int, text: str, **kwargs):
+    """Безопасная отправка сообщений с автоматической обработкой миграции группы."""
+    global GROUP_ID
+    try:
+        return await bot.send_message(chat_id, text, **kwargs)
+    except TelegramMigrateToChat as e:
+        GROUP_ID = e.migrate_to_chat_id
+        return await bot.send_message(GROUP_ID, text, **kwargs)
+    except Exception as e:
+        print(f"Ошибка отправки сообщения: {e}")
+
 # --- АДМИН-КОМАНДЫ ---
 @dp.message(Command("jointime"))
 async def set_jointime(message: types.Message):
@@ -76,7 +86,7 @@ async def set_jointime(message: types.Message):
             set_config("jointime", t)
             await message.answer(f"✅ Время регистрации установлено: {t} сек.")
         else:
-            await message.answer("❌ Время от 10 до 1800 секунд.")
+            await message.answer("❌ Укажите время от 10 до 1800 секунд.")
     except Exception:
         await message.answer("Формат: `/jointime 300`")
 
@@ -94,7 +104,7 @@ async def set_prize(message: types.Message):
         return
     cur.execute("INSERT OR REPLACE INTO prizes (game, text) VALUES (?, ?)", (game, text))
     db.commit()
-    await message.answer(f"✅ Приз для **{game}** сохранен: {text}")
+    await message.answer(f"✅ Приз для **{game}** сохранён: {text}")
 
 @dp.message(Command("prizes"))
 async def show_prizes(message: types.Message):
@@ -114,7 +124,7 @@ async def mute_chat(message: types.Message):
     await hide_admin_cmd(message)
     try:
         await bot.set_chat_permissions(GROUP_ID, ChatPermissions(can_send_messages=False))
-        await bot.send_message(GROUP_ID, "🔇 Чат переведён в режим «Только чтение».")
+        await safe_send_message(GROUP_ID, "🔇 Чат переведён в режим «Только чтение».")
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
 
@@ -132,7 +142,7 @@ async def unmute_chat(message: types.Message):
                 can_add_web_page_previews=True
             )
         )
-        await bot.send_message(GROUP_ID, "🔊 Чат разблокирован.")
+        await safe_send_message(GROUP_ID, "🔊 Чат разблокирован.")
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
 
@@ -143,7 +153,7 @@ async def start_777(message: types.Message):
     if not await is_admin(message.from_user.id): return
     await hide_admin_cmd(message)
     game_777_active = True
-    await bot.send_message(
+    await safe_send_message(
         GROUP_ID,
         "🎰 **ИГРА «ЛУДКА 777» НАЧАЛАСЬ!**\n\n"
         "Отправляйте эмодзи 🎰 со своей клавиатуры в чат.\n"
@@ -186,7 +196,7 @@ async def start_21(message: types.Message):
         InlineKeyboardButton(text="Участвовать 🎲", callback_data="reg_21")
     ]])
 
-    await bot.send_message(
+    await safe_send_message(
         GROUP_ID,
         f"🎲 **РЕГИСТРАЦИЯ НА ИГРУ «21»**\n\n"
         f"Нажмите кнопку ниже! На регистрацию дано **{join_time} сек.**",
@@ -211,7 +221,7 @@ async def register_21_user(callback: types.CallbackQuery):
 async def process_21_game():
     global game_21_active
     if not reg_users:
-        await bot.send_message(GROUP_ID, "❌ Никто не зарегистрировался. Игра «21» отменена.")
+        await safe_send_message(GROUP_ID, "❌ Никто не зарегистрировался. Игра «21» отменена.")
         game_21_active = False
         return
 
@@ -225,7 +235,7 @@ async def process_21_game():
     initial_players = [dict(p) for p in players_queue]
     winner = None
 
-    await bot.send_message(
+    await safe_send_message(
         GROUP_ID,
         f"🚀 **Игра «21» стартует!** Участников: {len(players_queue)}\n"
         f"⚙️ Бот крутит кубик 🎲 за каждого по очереди."
@@ -233,7 +243,7 @@ async def process_21_game():
 
     while game_21_active and not winner:
         if not players_queue:
-            await bot.send_message(GROUP_ID, "🔄 Все игроки выбыли! Перезапуск раунда...")
+            await safe_send_message(GROUP_ID, "🔄 Все игроки выбыли! Перезапуск раунда...")
             players_queue = [dict(p) for p in initial_players]
             for p in players_queue:
                 p["score"] = 0
@@ -243,7 +253,7 @@ async def process_21_game():
         player = players_queue.pop(0)
         mention = get_mention(player["id"], player["un"])
 
-        await bot.send_message(GROUP_ID, f"🎲 Ход игрока {mention} (Сумма: {player['score']})")
+        await safe_send_message(GROUP_ID, f"🎲 Ход игрока {mention} (Сумма: {player['score']})")
         
         dice_msg = await bot.send_dice(GROUP_ID, emoji="🎲")
         val = dice_msg.dice.value
@@ -251,7 +261,7 @@ async def process_21_game():
 
         await asyncio.sleep(1.5)
 
-        await bot.send_message(GROUP_ID, f"{mention}: 🎲 Выпало **{val}** | Сумма: **{player['score']}**")
+        await safe_send_message(GROUP_ID, f"{mention}: 🎲 Выпало **{val}** | Сумма: **{player['score']}**")
 
         if player["score"] == 21:
             winner = player
@@ -261,9 +271,9 @@ async def process_21_game():
                 player["busts"] = 1
                 player["score"] = 0
                 players_queue.append(player)
-                await bot.send_message(GROUP_ID, f"💥 {mention} превысил 21! Сумма сброшена на 0, уходит в конец очереди.")
+                await safe_send_message(GROUP_ID, f"💥 {mention} превысил 21! Сумма сброшена на 0, уходит в конец очереди.")
             else:
-                await bot.send_message(GROUP_ID, f"❌ {mention} снова превысил 21 и выбывает!")
+                await safe_send_message(GROUP_ID, f"❌ {mention} снова превысил 21 и выбывает!")
         else:
             players_queue.append(player)
 
@@ -275,7 +285,7 @@ async def process_21_game():
         pz = cur.fetchone()
         prize_text = pz[0] if pz else "Не указан"
 
-        await bot.send_message(
+        await safe_send_message(
             GROUP_ID,
             f"🏆 **ПОБЕДИТЕЛЬ В 21:** {get_mention(winner['id'], winner['un'])}\n"
             f"🎯 Набрал ровно **21**!\n"
@@ -299,7 +309,7 @@ async def start_quiz(message: types.Message):
         InlineKeyboardButton(text="Участвовать 🎓", callback_data="reg_quiz")
     ]])
 
-    await bot.send_message(
+    await safe_send_message(
         GROUP_ID,
         f"🎓 **НАЧИНАЕТСЯ ВИКТОРИНА!**\n\n"
         f"5 вопросов. Время на регистрацию: **{join_time} сек.**",
@@ -325,7 +335,7 @@ async def register_quiz_user(callback: types.CallbackQuery):
 async def run_quiz_questions():
     global game_quiz_active
     if not reg_users:
-        await bot.send_message(GROUP_ID, "❌ Нет участников. Викторина отменена.")
+        await safe_send_message(GROUP_ID, "❌ Нет участников. Викторина отменена.")
         game_quiz_active = False
         return
 
@@ -350,7 +360,7 @@ async def run_quiz_questions():
         await asyncio.sleep(32)
 
     if not quiz_scores:
-        await bot.send_message(GROUP_ID, "Викторина завершена. Ответы не получены.")
+        await safe_send_message(GROUP_ID, "Викторина завершена. Ответы не получены.")
         game_quiz_active = False
         return
 
@@ -361,7 +371,7 @@ async def run_quiz_questions():
     pz = cur.fetchone()
     prize_text = pz[0] if pz else "Не указан"
 
-    await bot.send_message(
+    await safe_send_message(
         GROUP_ID,
         f"🏆 **ПОБЕДИТЕЛЬ ВИКТОРИНЫ:** {get_mention(win_id, win_data['username'])}\n"
         f"📊 Очки: **{win_data['score']}**\n"
