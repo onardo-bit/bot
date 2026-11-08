@@ -13,7 +13,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, PollAnswer
 TOKEN = os.getenv("BOT_TOKEN")
 
 ADMIN_IDS = [7004839619]
-ADMIN_USERNAME = "onardo-bit"
+ADMIN_USERNAME = "@rveke"
 GROUP_ID = -5370978242
 EXACT_777_VALUE = 64 # Значение диска 🎰 для 777
 
