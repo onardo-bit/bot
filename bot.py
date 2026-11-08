@@ -9,12 +9,12 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, PollAnswer, ChatPermissions
 
 # --- КОНФИГУРАЦИЯ ---
-# Токен забирается из настроек Railway (Variables -> BOT_TOKEN)
 TOKEN = os.getenv("BOT_TOKEN")
 
 ADMIN_IDS = [7004839619]
-ADMIN_USERNAME = "@rveke"
-GROUP_ID = -5370978242
+ADMIN_USERNAME = "onardo-bit"
+# Обновленный ID супергруппы из вашего лога:
+GROUP_ID = -1004382624629 
 EXACT_777_VALUE = 64 # Значение диска 🎰 для 777
 
 if not TOKEN:
