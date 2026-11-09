@@ -12,7 +12,7 @@ from aiogram.exceptions import TelegramMigrateToChat, TelegramAPIError
 TOKEN = os.getenv("BOT_TOKEN")
 
 ADMIN_IDS = [7004839619]
-ADMIN_USERNAME = "onardo-bit"
+ADMIN_USERNAME = "rveke"
 GROUP_ID = -1004382624629 
 EXACT_777_VALUE = 64 
 
