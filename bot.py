@@ -6,7 +6,7 @@ import time
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, PollAnswer, ChatPermissions
-from aiogram.exceptions import TelegramMigrateToChat, TelegramAPIError
+from aiogram.exceptions import TelegramMigrateToChat, TelegramAPIError, TelegramRetryAfter
 
 # --- КОНФИГУРАЦИЯ ---
 TOKEN = os.getenv("BOT_TOKEN")
@@ -126,15 +126,32 @@ def get_mention(user_id: int, username: str = None) -> str:
 
 async def safe_send_message(chat_id: int, text: str, **kwargs):
     global GROUP_ID
-    try:
-        if 'parse_mode' not in kwargs:
-            kwargs['parse_mode'] = "HTML"
-        return await bot.send_message(chat_id, text, **kwargs)
-    except TelegramMigrateToChat as e:
-        GROUP_ID = e.migrate_to_chat_id
-        return await bot.send_message(GROUP_ID, text, **kwargs)
-    except Exception as e:
-        print(f"Ошибка отправки сообщения: {e}")
+    if 'parse_mode' not in kwargs:
+        kwargs['parse_mode'] = "HTML"
+    for attempt in range(4):
+        try:
+            return await bot.send_message(chat_id, text, **kwargs)
+        except TelegramMigrateToChat as e:
+            GROUP_ID = e.migrate_to_chat_id
+            chat_id = GROUP_ID
+        except TelegramRetryAfter as e:
+            print(f"Flood control, жду {e.retry_after}с (попытка {attempt + 1})")
+            await asyncio.sleep(e.retry_after + 1)
+        except Exception as e:
+            print(f"Ошибка отправки сообщения: {e}")
+            return None
+    return None
+
+async def safe_send_dice():
+    for attempt in range(3):
+        try:
+            return await bot.send_dice(GROUP_ID, emoji="🎲")
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(min(e.retry_after + 1, 30))
+        except Exception as e:
+            print(f"Ошибка кубика: {e}")
+            return None
+    return None
 
 # --- ЕЖЕДНЕВНОЕ КОЛЕСО ФОРТУНЫ (/chance) ---
 @dp.message(Command("chance"))
@@ -406,15 +423,13 @@ async def process_user_roll(callback: types.CallbackQuery):
     try: await callback.message.edit_reply_markup(reply_markup=None)
     except: pass
 
-    try:
-        dice_msg = await bot.send_dice(GROUP_ID, emoji="🎲")
-        active_turn_21['dice_value'] = dice_msg.dice.value
-    except Exception as e:
-        print(f"Ошибка кубика 21: {e}")
-        active_turn_21['dice_value'] = random.randint(1, 6)
+    turn = active_turn_21
+    try: await callback.answer("Кубик брошен!")
+    except Exception: pass
 
-    active_turn_21['event'].set()
-    await callback.answer("Кубик брошен!")
+    dice_msg = await safe_send_dice()
+    turn['dice_value'] = dice_msg.dice.value if dice_msg else random.randint(1, 6)
+    turn['event'].set()
 
 async def process_21_game():
     global game_21_active, active_turn_21
@@ -491,6 +506,7 @@ async def process_21_game():
                     players_queue.append(player)
 
             except asyncio.TimeoutError:
+                active_turn_21['player_id'] = None
                 try: await turn_msg.edit_reply_markup(reply_markup=None)
                 except: pass
                 await safe_send_message(GROUP_ID, f"⏰ Время вышло! {mention} проигнорировал ход и <b>ВЫБЫВАЕТ</b>!")
@@ -603,9 +619,10 @@ async def run_quiz_questions():
 @dp.poll_answer()
 async def process_poll_answer(poll_answer: PollAnswer):
     if not game_quiz_active: return
-    if poll_answer.user_id in quiz_scores:
-        quiz_scores[poll_answer.user_id]["score"] += 1
-        quiz_scores[poll_answer.user_id]["last_ts"] = time.time()
+    uid = poll_answer.user.id if poll_answer.user else None
+    if uid in quiz_scores:
+        quiz_scores[uid]["score"] += 1
+        quiz_scores[uid]["last_ts"] = time.time()
 
 # --- ИГРА 4: РУССКАЯ РУЛЕТКА ---
 @dp.message(Command("startroulette"))
@@ -666,7 +683,8 @@ async def process_rr_shot(callback: types.CallbackQuery):
     except: pass
 
     active_turn_rr['event'].set()
-    await callback.answer("Вы спустили курок...")
+    try: await callback.answer("Вы спустили курок...")
+    except Exception: pass
 
 async def process_roulette_game():
     global game_roulette_active, active_turn_rr
@@ -746,6 +764,7 @@ async def process_roulette_game():
                         random.shuffle(cylinder)
 
             except asyncio.TimeoutError:
+                active_turn_rr['player_id'] = None
                 try: await turn_msg.edit_reply_markup(reply_markup=None)
                 except: pass
                 await safe_send_message(GROUP_ID, f"🐔 Время вышло! {mention} струсил, не спустил курок и <b>ДИСКВАЛИФИЦИРУЕТСЯ</b>!")
